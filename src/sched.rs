@@ -79,7 +79,7 @@ pub fn mycpu() -> &'static mut Cpu {
     &mut CPUS.as_mut()[cpuid()]
 }
 
-static NTASKS: usize = 32;
+static NTASKS: usize = 8;
 
 enum State {
     Free,
@@ -150,6 +150,7 @@ pub type RTree = LinkedList<Region>;
 pub struct Task {
     parent: Option<*mut Task>,
     exit_code: u64,
+    sp_el1: usize,
     tid: Option<u64>,
     state: State,
     ctx: [u64; 15],
@@ -171,10 +172,13 @@ pub struct Task {
 unsafe impl Sync for Task {}
 
 impl Task {
+    const STACKSIZE: usize = 4096 * 2;
+
     const fn zeroed() -> Task {
         Task {
             parent: None,
             exit_code: 0,
+            sp_el1: 0,
             tid: None,
             state: State::Free,
             ctx: [0; 15],
@@ -232,10 +236,16 @@ impl Task {
         return Some(ptr2mut!((*file) as *const File, File));
     }
 
-    fn init_1(&mut self, pc: u64) {
+    fn init(&mut self) {
+        let sp_el1 = pm::alloc(4096 * 2).unwrap();
+        self.sp_el1 = vm::map(sp_el1, 2, vm::PR_PW).unwrap();
+    }
+
+    fn init_user(&mut self) {
         let user_pt = pm::alloc(4096).unwrap() as u64;
         self.user_pt = Some(user_pt);
         let l0_pt = PmWrap::new(self.user_pt.unwrap() as usize, vm::PR_PW, true).unwrap();
+
         let user_sp = pm::alloc(SPEL0_SIZE).unwrap();
 
         map(
@@ -249,14 +259,10 @@ impl Task {
 
         self.user_sp = Some(user_sp as u64);
 
-        let sp_el1 = pm::alloc(4096 * 2).unwrap();
-        let sp_el1 = vm::map(sp_el1, 2, vm::PR_PW).unwrap();
-        let sp_el1 = sp_el1 + 4096 * 2;
-
+        let sp_el1 = self.sp_el1 + Self::STACKSIZE;
         let tf_ptr = unsafe { (sp_el1 as *mut trap::Frame).sub(1) };
         let tf = unsafe { tf_ptr.as_mut().unwrap() };
 
-        tf.pc = pc;
         tf.pstate = 0x0;
 
         self.ctx[12] = tf_ptr as u64;
@@ -874,7 +880,7 @@ pub fn fork() -> u64 {
 
     let child_tidptr = tf.regs[4] as *mut u32;
 
-    if let Some(new_task) = alloc_task() {
+    if let Some(new_task) = alloc_user_task() {
         assert!(new_task.lock.holding());
 
         new_task.cwd = Some(task.cwd.as_ref().unwrap().clone());
@@ -1370,7 +1376,7 @@ pub fn setpgid() -> u64 {
     0
 }
 
-fn alloc_task() -> Option<&'static mut Task> {
+fn alloc_user_task() -> Option<&'static mut Task> {
     let tasks = TASKS.as_mut();
     for i in 0..tasks.len() {
         let task = &mut tasks[i];
@@ -1379,7 +1385,7 @@ fn alloc_task() -> Option<&'static mut Task> {
             task.state = State::Used;
             task.pid = i as u16;
             forget(lock);
-            task.init_1(0);
+            task.init_user();
             return unsafe { (task as *const Task as *mut Task).as_mut() };
         }
         let _ = lock;
@@ -1398,8 +1404,8 @@ fn restore_ttbr0(task_idx: usize, pt: usize) {
     isb!();
 }
 
-pub fn create_task(entry: u64) {
-    let task = alloc_task().unwrap();
+pub fn create_user_task() {
+    let task = alloc_user_task().unwrap();
     task.files[0] = Some(fs::open_cons().unwrap());
     task.files[1] = Some(fs::open_cons().unwrap());
     task.files[2] = Some(fs::open_cons().unwrap());
@@ -1523,28 +1529,11 @@ static TASKS: SyncUnsafeCell<[Task; NTASKS]> = SyncUnsafeCell::new([
     Task::zeroed(),
     Task::zeroed(),
     Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
-    Task::zeroed(),
 ]);
+
+pub fn init() {
+    let tasks = TASKS.as_mut();
+    for i in 0..tasks.len() {
+        tasks[i].init();
+    }
+}

@@ -44,7 +44,8 @@ fn main(b: usize, e: usize) {
     rtc::init();
     virtio::init();
     enable_fp();
-    sched::create_task(0);
+    sched::init();
+    sched::create_user_task();
     sched::scheduler();
     loop {
         wfi!();
@@ -110,7 +111,7 @@ pub extern "C" fn _start() {
        "mrs x0, sctlr_el1",
        "orr x0, x0, #1",
        "msr sctlr_el1, x0",
-        "isb sy",
+       "isb sy",
        "ldr x0, ={stack}",
        "mov sp, x0",
        "ldr x0, ={trap}",
