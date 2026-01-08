@@ -191,7 +191,7 @@ impl Elf {
 
 impl Drop for Elf {
     fn drop(&mut self) {
-        if let Ok(_) = self.file.close() {}
+        if let Ok(_) = self.file.close(true, false) {}
     }
 }
 

@@ -18,6 +18,7 @@ mod elf;
 mod fs;
 mod heap;
 mod p9;
+mod pipe;
 mod pm;
 mod rng;
 mod rtc;

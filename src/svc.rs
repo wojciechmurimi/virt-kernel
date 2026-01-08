@@ -1,5 +1,5 @@
 use crate::{
-    fs, print, rtc,
+    fs, pipe, print, rtc,
     sched::{self, mycpu},
 };
 
@@ -22,6 +22,7 @@ pub fn handle() {
         49 => fs::chdir(),
         56 => fs::openat(),
         57 => fs::close(),
+        59 => pipe::pipe2(),
         61 => fs::getdents64(),
         62 => fs::lseek(),
         63 => fs::sys_read(),

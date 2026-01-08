@@ -7,12 +7,14 @@ use core::{
     sync::atomic::{AtomicU16, Ordering},
 };
 
-use alloc::{str, string::String, vec::Vec};
+use alloc::{boxed::Box, str, string::String, vec::Vec};
 
 use crate::{
     cons::{self},
     heap::SyncUnsafeCell,
-    p9, print, ptr2mut, ptr2ref, ptr2ref_op, rtc,
+    p9,
+    pipe::{self, Pipe},
+    print, ptr2mut, ptr2ref, ptr2ref_op, rtc,
     sched::{Task, mycpu, sleep_if},
     spin::Lock,
     stuff::{as_slice, as_slice_mut, cstr_as_slice},
@@ -25,6 +27,7 @@ pub enum FileKind {
     Used,
     P9(&'static mut p9::File),
     Cons(&'static mut cons::File),
+    Pipe(Box<Pipe>),
 }
 
 pub struct File {
@@ -53,6 +56,7 @@ impl File {
 
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         if self.rc.load(Ordering::Acquire) == 0 {
+            print!("READ NULL FILE....\n");
             return Err(());
         }
         match &mut self.kind {
@@ -65,6 +69,7 @@ impl File {
                 }
             }
             FileKind::Cons(c) => c.read(buf),
+            FileKind::Pipe(p) => p.read(buf),
             _ => {
                 panic!("read: unhandled file kind.")
             }
@@ -85,16 +90,25 @@ impl File {
                 }
             }
             FileKind::Cons(c) => c.write(buf),
+            FileKind::Pipe(p) => p.write(buf),
             _ => {
                 panic!("write: unhandled file kind.")
             }
         }
     }
 
-    pub fn close(&mut self) -> Result<(), ()> {
+    pub fn close(&mut self, r: bool, w: bool) -> Result<(), ()> {
         if self.rc.load(Ordering::Acquire) == 0 {
             return Ok(());
         }
+
+        match &mut self.kind {
+            FileKind::Pipe(p) => {
+                assert!(r != w);
+                p.close(r);
+            }
+            _ => {}
+        };
 
         if let Ok(1) = self.rc.compare_exchange(
             1,
@@ -120,6 +134,7 @@ impl File {
                     };
                 }
                 FileKind::Cons(cons) => {}
+                FileKind::Pipe(p) => {}
                 _ => panic!("write: unhandled file kind."),
             }
         } else {
@@ -147,6 +162,8 @@ impl File {
             FileKind::Used => 0,
             FileKind::P9(file) => file.get_size(),
             FileKind::Cons(file) => file.get_size(),
+            FileKind::Pipe(_) => 0,
+            _ => panic!("unhandled file kind."),
         }
     }
 
@@ -164,13 +181,17 @@ impl File {
         Ok(self.offt)
     }
 
-    pub fn dup(&mut self) -> Option<&'static mut Self> {
+    pub fn dup(&mut self, r: bool, w: bool) -> Option<&'static mut Self> {
         self.rc.fetch_add(1, Ordering::Release);
         print!(
             "DUP: {:?} rc {}\n",
             self.path,
             self.rc.load(Ordering::Relaxed)
         );
+        match &mut self.kind {
+            FileKind::Pipe(p) => p.dup(r, w),
+            _ => {}
+        }
         unsafe { (self as *const Self as *mut Self).as_mut() }
     }
 
@@ -197,6 +218,7 @@ impl File {
         match &self.kind {
             FileKind::P9(p9) => p9.stat(stat),
             FileKind::Cons(c) => c.stat(stat),
+            FileKind::Pipe(p) => p.stat(stat),
             FileKind::None => panic!("fstat: none"),
             FileKind::Used => panic!("fstat: used"),
             _ => panic!("fstat: unhandled file kind."),
@@ -213,7 +235,7 @@ impl File {
                     Err(())
                 }
             }
-            _ => panic!("fstat: unhandled file kind."),
+            _ => panic!("unhandled file kind."),
         }
     }
 
@@ -241,6 +263,7 @@ impl File {
             FileKind::Used => false,
             FileKind::P9(file) => true,
             FileKind::Cons(file) => file.readable(),
+            _ => panic!("unhandled file kind."),
         }
     }
 
@@ -250,6 +273,7 @@ impl File {
             FileKind::Used => false,
             FileKind::P9(_) => true,
             FileKind::Cons(_) => true,
+            _ => panic!("unhandled file kind."),
         }
     }
 
@@ -259,6 +283,7 @@ impl File {
             FileKind::Used => false,
             FileKind::P9(_) => true,
             FileKind::Cons(_) => true,
+            _ => panic!("unhandled file kind."),
         }
     }
 
@@ -273,6 +298,21 @@ impl File {
             x => panic!("unhandled file kind."),
         }
     }
+
+    pub fn is_pipe(&self) -> bool {
+        match &self.kind {
+            FileKind::Pipe(_) => true,
+            _ => false,
+        }
+    }
+
+    // pub fn pipe_close(&mut self, reader: bool) -> Result<(), ()> {
+    //     match &mut self.kind {
+    //         FileKind::Pipe(p) => p.close(reader),
+    //         _ => Err(()),
+    //     };
+    //     self.close()
+    // }
 }
 
 const NFILES: usize = 128;
@@ -299,6 +339,18 @@ pub fn open(path: &str, flags: u32, _: u32) -> Result<&'static mut File, ()> {
     Err(())
 }
 
+pub fn open_pipe(nonblock: bool) -> Result<&'static mut File, ()> {
+    if let Some((idx, file)) = alloc_file() {
+        file.kind = FileKind::Pipe(Box::new(Pipe::new(nonblock)));
+        file.rc = AtomicU16::new(1);
+        file.path = None;
+        file.offt = 0;
+        Ok(file)
+    } else {
+        Err(())
+    }
+}
+
 pub fn open_cons() -> Result<&'static mut File, ()> {
     if let Some((_, file)) = alloc_file() {
         file.kind = FileKind::Cons(cons::open());
@@ -313,6 +365,7 @@ pub fn sys_write() -> u64 {
     let task = mycpu().get_task().unwrap();
     let tf = task.get_trap_frame().unwrap();
     let fd = tf.regs[0] as usize;
+
     if fd >= task.files.len() {
         return !0;
     }
@@ -331,7 +384,7 @@ pub fn sys_write() -> u64 {
     }
     // i trust you user
     let buf = as_slice(ptr as *const u8, len);
-    if let Ok(n) = file.write(buf) {
+    if let Ok(n) = file.file.write(buf) {
         n as u64
     } else {
         !0
@@ -370,7 +423,7 @@ pub fn sys_writev() -> u64 {
     for i in 0..iovec_len {
         let iovec = &iovec_buf[i];
         let buf = as_slice(iovec.ptr, iovec.len);
-        if let Ok(n) = file.write(buf) {
+        if let Ok(n) = file.file.write(buf) {
             written += n as u64
         } else {
             return !0;
@@ -441,7 +494,7 @@ pub fn getdents64() -> u64 {
     }
 
     let buf = as_slice_mut(ptr as *mut u8, len);
-    if let Ok(n) = file.getdents64(buf) {
+    if let Ok(n) = file.file.getdents64(buf) {
         n as u64
     } else {
         !0
@@ -452,6 +505,7 @@ pub fn sys_read() -> u64 {
     let task = mycpu().get_task().unwrap();
     let tf = task.get_trap_frame().unwrap();
     let fd = tf.regs[0] as usize;
+
     if fd >= task.files.len() {
         return !0;
     }
@@ -468,9 +522,11 @@ pub fn sys_read() -> u64 {
     if ptr == 0 {
         return !0;
     }
+
+    print!("READ FD: {}\n", fd);
     // i trust you user
     let buf = as_slice_mut(ptr as *mut u8, len);
-    if let Ok(n) = file.read(buf) {
+    if let Ok(n) = file.file.read(buf) {
         n as u64
     } else {
         !0
@@ -657,7 +713,7 @@ pub fn lseek() -> u64 {
 
     let file = task.files[fd].as_mut().unwrap();
 
-    if let Ok(offt) = file.lseek(tf.regs[1] as i64, tf.regs[2]) {
+    if let Ok(offt) = file.file.lseek(tf.regs[1] as i64, tf.regs[2]) {
         offt
     } else {
         return -29i64 as u64;
@@ -816,7 +872,7 @@ fn at_path(fd: u64, path: String, task: &Task) -> Result<String, ()> {
         task.cwd.as_ref().unwrap().clone()
     } else {
         if let Some(dir) = task.get_file(fd as usize) {
-            if let Some(p) = &dir.path {
+            if let Some(p) = &dir.file.path {
                 p.clone()
             } else {
                 return Err(());
@@ -887,7 +943,11 @@ pub fn openat() -> u64 {
 
     if let Some(idx) = idx {
         if let Ok(f) = open(&real_path, tf.regs[2] as u32, tf.regs[3] as u32) {
-            task.files[idx] = Some(f);
+            task.files[idx] = Some(crate::sched::FD {
+                file: f,
+                read: true,
+                write: true,
+            });
             return idx as u64;
         } else {
             print!("FAILED TO OPEN: {}\n", real_path);
@@ -932,11 +992,11 @@ fn check_events(pfds: &mut [Pollfd], task: &Task, timer_wait: bool) -> usize {
         pfd.revents = 0;
 
         if let Some(file) = task.get_file(fd as usize) {
-            if !file.is_ok() {
+            if !file.file.is_ok() {
                 pfd.revents |= POLL::ERR;
             }
 
-            if file.hanged_up() {
+            if file.file.hanged_up() {
                 pfd.revents |= POLL::HUP;
             }
         } else {
@@ -952,13 +1012,13 @@ fn check_events(pfds: &mut [Pollfd], task: &Task, timer_wait: bool) -> usize {
         match events {
             POLL::IN => {
                 if let Some(file) = task.get_file(fd as usize) {
-                    if file.readable() {
+                    if file.file.readable() {
                         print!("POLLIN DETECTED.\n");
                         pfd.revents |= POLL::IN;
                         n_events += 1;
                     } else {
                         print!("ADDING POLLIN TO WQ\n");
-                        file.wait4readable();
+                        file.file.wait4readable();
                         if timer_wait {
                             timer::add2wait();
                         }
@@ -1022,6 +1082,11 @@ pub fn close() -> u64 {
     let tf = task.get_trap_frame().unwrap();
 
     let fd = tf.regs[0] as usize;
+
+    if fd > task.files.len() {
+        return !0;
+    }
+
     print!("CLOSE FD {}\n", fd);
 
     if task.files[fd].is_none() {
@@ -1029,8 +1094,15 @@ pub fn close() -> u64 {
     }
 
     let file = task.files[fd].as_mut().unwrap();
-    print!("CLOSING {:?} fd: {} BY {}\n", file.path, fd, task.pid);
-    if let Ok(_) = file.close() {
+    print!("CLOSING {:?} fd: {} BY {}\n", file.file.path, fd, task.pid);
+
+    // if file.file.is_pipe() {
+    //     file.file.pipe_close(file.read);
+    //     task.files[fd] = None;
+    //     return 0;
+    // }
+
+    if let Ok(_) = file.file.close(file.read, file.write) {
         task.files[fd] = None;
         0
     } else {
@@ -1057,11 +1129,11 @@ pub fn dup3() -> u64 {
 
     let mut replaced = task.get_file(new_fd);
 
-    let file = task.get_file(old_fd).unwrap();
-    task.files[new_fd] = Some(file.dup().unwrap());
+    // let file = task.get_file(old_fd).unwrap();
+    task.files[new_fd] = Some(task.dup_file(old_fd));
 
     if let Some(f) = &mut replaced {
-        f.close().unwrap();
+        f.file.close(f.read, f.write).unwrap();
     }
 
     print!("DUP3 {} to {}\n", old_fd, new_fd);
@@ -1079,7 +1151,7 @@ pub fn ftruncate() -> u64 {
         return !0;
     }
 
-    let file = task.get_file(fd).unwrap();
+    let file = task.get_file(fd).unwrap().file;
 
     if file.path.is_none() {
         return !0;
@@ -1111,8 +1183,8 @@ pub fn sendfile64() -> u64 {
 
     print!("SENDFILE: {} {} {:?} {}\n", in_fd, out_fd, offt, cnt);
 
-    let ifile = task.get_file(in_fd).unwrap();
-    let ofile = task.get_file(out_fd).unwrap();
+    let ifile = task.get_file(in_fd).unwrap().file;
+    let ofile = task.get_file(out_fd).unwrap().file;
 
     if !offt.is_null() {
         ifile.seek_to(unsafe { offt.read() as usize })
@@ -1182,7 +1254,10 @@ pub fn newfstat() -> u64 {
 
     let file = task.files[fd].as_ref().unwrap();
 
-    if let Ok(_) = file.fstat(unsafe { (tf.regs[1] as *mut Stat).as_mut() }.unwrap()) {
+    if let Ok(_) = file
+        .file
+        .fstat(unsafe { (tf.regs[1] as *mut Stat).as_mut() }.unwrap())
+    {
         return 0;
     }
 

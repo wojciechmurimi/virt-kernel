@@ -147,6 +147,12 @@ impl Region {
 
 pub type RTree = LinkedList<Region>;
 
+pub struct FD {
+    pub file: &'static mut fs::File,
+    pub read: bool,
+    pub write: bool,
+}
+
 pub struct Task {
     parent: Option<*mut Task>,
     exit_code: u64,
@@ -160,7 +166,8 @@ pub struct Task {
     user_sp: Option<u64>,
     chan: Option<u64>,
     pub pid: u16,
-    pub files: [Option<&'static mut fs::File>; 8],
+    // pub files: [Option<&'static mut fs::File>; 8],
+    pub files: [Option<FD>; 8],
     program: RTree,
     mmap: Region,
     brk: Region,
@@ -223,7 +230,7 @@ impl Task {
         unsafe { (self.trapframe as *mut trap::Frame).as_mut() }
     }
 
-    pub fn get_file(&self, idx: usize) -> Option<&'static mut File> {
+    pub fn get_file(&self, idx: usize) -> Option<FD> {
         if idx > self.files.len() {
             return None;
         }
@@ -233,7 +240,50 @@ impl Task {
         }
 
         let file = self.files[idx].as_ref().unwrap();
-        return Some(ptr2mut!((*file) as *const File, File));
+        return Some(FD {
+            read: file.read,
+            write: file.write,
+            file: ptr2mut!((file.file) as *const File, File),
+        });
+    }
+
+    pub fn alloc_file(&mut self, file: FD) -> Option<usize> {
+        let lock = self.lock.acquire();
+
+        for i in 0..self.files.len() {
+            if self.files[i].is_none() {
+                self.files[i] = Some(file);
+                return Some(i);
+            }
+        }
+
+        drop(lock);
+
+        None
+    }
+
+    pub fn close_file(&mut self, idx: usize) {
+        let lock = self.lock.acquire();
+
+        if let Some(f) = &mut self.files[idx] {
+            f.file.close(f.read, f.write);
+            self.files[idx] = None;
+        }
+
+        drop(lock);
+    }
+
+    pub fn dup_file(&mut self, idx: usize) -> FD {
+        if let Some(f) = &mut self.files[idx] {
+            f.file.dup(f.read, f.write);
+            return FD {
+                file: ptr2mut!(f.file as *mut fs::File, fs::File),
+                read: f.read,
+                write: f.write,
+            };
+        } else {
+            panic!("dup none.")
+        }
     }
 
     fn init(&mut self) {
@@ -267,6 +317,10 @@ impl Task {
 
         self.ctx[12] = tf_ptr as u64;
         self.ctx[13] = forkret as *const fn() as u64;
+
+        for i in 0..self.files.len() {
+            self.files[i] = None
+        }
 
         self.trapframe = tf_ptr as u64;
     }
@@ -915,7 +969,7 @@ pub fn fork() -> u64 {
 
         for i in 0..task.files.len() {
             if let Some(f) = &mut task.files[i] {
-                new_task.files[i] = f.dup();
+                new_task.files[i] = Some(task.dup_file(i));
             }
         }
 
@@ -1007,7 +1061,7 @@ fn free_task(pid: usize) -> Result<(), vm::Error> {
     for i in 0..task.files.len() {
         if let Some(f) = &mut task.files[i] {
             print!("FREE FILE: {} dis: {}\n", i, mycpu().int_disables);
-            let c = f.close();
+            let c = f.file.close(f.read, f.write);
             print!("FREE FILE: {} DONE dis: {}\n", i, mycpu().int_disables);
             if c.is_err() {}
         }
@@ -1140,6 +1194,7 @@ pub fn wait() -> u64 {
                         task.state = State::Free;
                         task.parent = None;
                         task.tid = None;
+                        print!("sys_WAIT done\n");
                         return task.pid as u64;
                     }
                 }
@@ -1406,9 +1461,21 @@ fn restore_ttbr0(task_idx: usize, pt: usize) {
 
 pub fn create_user_task() {
     let task = alloc_user_task().unwrap();
-    task.files[0] = Some(fs::open_cons().unwrap());
-    task.files[1] = Some(fs::open_cons().unwrap());
-    task.files[2] = Some(fs::open_cons().unwrap());
+    task.files[0] = Some(FD {
+        file: fs::open_cons().unwrap(),
+        read: true,
+        write: true,
+    });
+    task.files[1] = Some(FD {
+        file: fs::open_cons().unwrap(),
+        read: true,
+        write: true,
+    });
+    task.files[2] = Some(FD {
+        file: fs::open_cons().unwrap(),
+        read: true,
+        write: true,
+    });
     task.state = State::Ready;
     task.lock.release();
 }
