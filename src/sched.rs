@@ -345,6 +345,11 @@ impl Wq {
         if task.is_null() {
             return;
         }
+        for i in 0..self.count {
+            if self.tasks[i].unwrap() == task {
+                return;
+            }
+        }
         let lock = self.lock.acquire();
         self.tasks[self.count] = Some(task);
         self.count += 1;
@@ -1510,18 +1515,8 @@ pub extern "C" fn forkret() {
     if FIRST.swap(false, Ordering::Release) {
         print!("launching init..\n");
         execv_inner(
-            "busybox",
-            &[
-                "sh".as_bytes(),
-                "-i".as_bytes(),
-                // "sh".as_bytes(),
-                // "-a".as_bytes(),
-                // "bar".as_bytes(),
-                // "baz".as_bytes(),
-                // "fiz".as_bytes(),
-                // "fix".as_bytes(),
-                // "fox".as_bytes(),
-            ],
+            "/bin/busybox",
+            &["sh".as_bytes(), "-i".as_bytes()],
             &TEST_ENV,
             false,
         )

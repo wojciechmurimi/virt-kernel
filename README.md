@@ -1,24 +1,53 @@
 # virt-kernel
-kernel for virt aarch64 board on qemu.
+
+A **small AArch64 kernel** written in Rust.
+
+Boots on the **QEMU `virt` board** and implements just enough of the Linux ABI to run **BusyBox** and small user programs.
+
+This is **not a serious OS**.
+It’s a playground for **AArch64 kernel hacking**.
+
+---
+
+## Features
+
+* Boots on QEMU (`virt`, AArch64)
+* UART console
+* Preemptive scheduler
+* Virtual memory with page tables
+* **Buddy allocator** for physical memory
+* Kernel heap on top of the buddy allocator
+* Virtio-9p
+* Pipes and TTY support
+* Minimal Linux-style syscall layer
+* BusyBox userland
+
+You can run things like `ls`, `cat`, `stat`, `vi`, etc.
+
+---
+
+## Requirements
+
+* `aarch64-unknown-none-softfloat` toolchain
+* QEMU (AArch64 system emulator)
+
+---
+
+## Running
 
 ```bash
-m@127:~/Desktop/aarch64/xyz$ cargo run --target aarch64-unknown-none-softfloat --release
-    Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
-     Running `/home/m/Desktop/aarch64/xyz/./run.sh target/aarch64-unknown-none-softfloat/release/xyz`
-/ # ls
-bin        build.zig  busybox    disas.txt  etc        init.c     main.zig
-/ # cat main.zig 
-const std = @import("std");
-
-std.os.linux.Stat {}
-/ # stat busybox
-  File: busybox
-  Size: 2237080   	Blocks: 547        IO Block: 4096   regular file
-Device: 0h/0d	Inode: 3399988123389603631  Links: 1
-Access: (0775/-rwxrwxr-x)  Uid: ( 1000/ UNKNOWN)   Gid: ( 1000/ UNKNOWN)
-Access: 2026-01-02 18:09:17.858993459 +0000
-Modify: 2025-12-16 12:09:31.000000000 +0000
-Change: 1970-01-01 00:00:00.000000000 +0000
-/ # 
-/ # 
+$ cargo run --target aarch64-unknown-none-softfloat --release
 ```
+
+This builds the kernel and launches QEMU via `run.sh`.
+
+---
+
+## Notes
+
+* Syscalls are incomplete and added as needed
+* Userland assumes BusyBox behavior
+* The code favors *experimentation* over correctness
+* Much unsafe code
+
+---

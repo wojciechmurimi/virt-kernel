@@ -7,7 +7,7 @@ qemu-system-aarch64 \
     -monitor telnet:127.0.0.1:4444,server,nowait \
     -kernel "$1" \
     -device virtio-rng-device \
-    -fsdev local,id=fs0,path=/home/m/Desktop/dbg,security_model=none \
+    -fsdev local,id=fs0,path=rootfs,security_model=none \
     -device virtio-9p-device,fsdev=fs0,mount_tag=sh0 \
     -global virtio-mmio.force-legacy=false \
     # -S -s
