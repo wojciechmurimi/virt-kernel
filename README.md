@@ -1,21 +1,19 @@
-# virt-kernel
+## virt-kernel
 
-A **small AArch64 kernel** written in Rust.
+A small AArch64 kernel written in Rust.
 
-Boots on the **QEMU `virt` board** and implements just enough of the Linux ABI to run **BusyBox** and small user programs.
+Boots on the QEMU virt board and implements just enough of the Linux ABI to run BusyBox and small user programs.
 
-This is **not a serious OS**.
-It’s a playground for **AArch64 kernel hacking**.
+This is not a serious OS.
+It’s a playground for AArch64 kernel hacking.
 
----
-
-## Features
+### Features
 
 * Boots on QEMU (`virt`, AArch64)
 * UART console
 * Preemptive scheduler
 * Virtual memory with page tables
-* **Buddy allocator** for physical memory
+* Buddy allocator for physical memory
 * Kernel heap on top of the buddy allocator
 * Virtio-9p
 * Pipes and TTY support
@@ -24,16 +22,12 @@ It’s a playground for **AArch64 kernel hacking**.
 
 You can run things like `ls`, `cat`, `stat`, `vi`, etc.
 
----
-
-## Requirements
+### Requirements
 
 * `aarch64-unknown-none-softfloat` toolchain
 * QEMU (AArch64 system emulator)
 
----
-
-## Running
+### Running
 
 ```bash
 $ cargo run --target aarch64-unknown-none-softfloat --release
@@ -41,13 +35,10 @@ $ cargo run --target aarch64-unknown-none-softfloat --release
 
 This builds the kernel and launches QEMU via `run.sh`.
 
----
-
-## Notes
+### Notes
 
 * Syscalls are incomplete and added as needed
 * Userland assumes BusyBox behavior
-* The code favors *experimentation* over correctness
+* The code favors experimentation over correctness
 * Much unsafe code
 
----
